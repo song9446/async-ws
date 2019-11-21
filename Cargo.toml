@@ -1,5 +1,5 @@
 [package]
-name = "async-ws"
+name = "yaws"
 version = "0.1.0"
 authors = ["Eunchul <eunchul.dev@gmail.com>"]
 edition = "2018"
@@ -7,13 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-std = "1.0"
-futures = "0.3"
+mio = { git = "https://github.com/tokio-rs/mio" }
+tungstenite = "*"
+slab = "0.4"
 log = "0.4"
-async-trait = "0.1"
-async-tungstenite = "0.1"
 env_logger = "0.7"
 
 [dev-dependencies]
-url = "2.0.0"
-env_logger = "0.7"

@@ -1,5 +1,6 @@
+/*
 struct Test;
-#[async_trait]
+
 impl Handler for Test {
     async fn on_open(&mut self, ws: &mut Socket) {
         info!("New WebSocket connection");
@@ -10,9 +11,10 @@ impl Handler for Test {
     async fn on_close(&mut self) {
         info!("WebSocket closed");
     }
-}
+}*/
+mod lib;
+use crate::lib::run;
 fn main() {
-    use crate::run;
     env_logger::init();
-    async_std::task::block_on(run());
+    run("127.0.0.1:3000");
 }

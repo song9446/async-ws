@@ -1,69 +1,116 @@
-use async_std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use async_std::task;
-use async_tungstenite::accept_async;
-use async_tungstenite::connect_async;
-use async_tungstenite::tungstenite::protocol::Message;
-use futures::StreamExt;
-use async_tungstenite::WebSocketStream;
-use async_trait::async_trait;
-use log::info;
+use std::collections::HashMap;
+use std::io::{self, Read, Write};
+use std::str::from_utf8;
 
-pub type Socket = WebSocketStream<TcpStream>;
+use mio::event::Event;
+use mio::net::{TcpListener, TcpStream};
+use mio::{Events, Interests, Poll, Registry, Token};
 
-#[async_trait]
-pub trait Handler: Sized + Clone + Send {
-    async fn on_open(&mut self, ws: &mut Socket); 
-    async fn on_message(&mut self, ws: &mut Socket, msg: Message);
-    async fn on_close(&mut self);
+use tungstenite::accept_hdr;
+use tungstenite::WebSocket;
+use tungstenite::handshake::server::Request;
+
+use tungstenite::Message;
+
+use slab::Slab;
+
+const SERVER: Token = Token(std::usize::MAX);
+
+fn ws_accept(stream: TcpStream) -> WebSocket<TcpStream> {
+    let callback = |req: &Request| {
+                println!("Received a new ws handshake");
+                println!("The request's path is: {}", req.path);
+                println!("The request's headers are:");
+                for &(ref header, _ /* value */) in req.headers.iter() {
+                    println!("* {}", header);
+                }
+
+                // Let's add an additional header to our response to the client.
+                let extra_headers = vec![
+                    (String::from("MyCustomHeader"), String::from(":)")),
+                    (
+                        String::from("SOME_TUNGSTENITE_HEADER"),
+                        String::from("header_value"),
+                    ),
+                ];
+                Ok(Some(extra_headers))
+            };
+    accept_hdr(stream, callback).unwrap()
 }
 
+enum Stream {
+    RawStream(TcpStream),
+    WebSocketStream(WebSocket<TcpStream>),
+}
+impl Stream {
+    fn get_ref(&self) -> &TcpStream {
+        match self {
+            Stream::RawStream(s) => &s,
+            Stream::WebSocketStream(s) => s.get_ref(),
+        }
+    }
+    fn as_raw(self) -> TcpStream {
+        match self {
+            Stream::RawStream(s) => s,
+            _ => panic!("Upgraded stream cannot converted to raw stream"),
+        }
+    }
+    fn is_raw(&self) -> bool {
+        match &self {
+            Stream::RawStream(_) => true,
+            _ => false,
+        }
+    }
+    fn read_message(&mut self) -> Result<Message, tungstenite::error::Error> {
+        match self {
+            Stream::RawStream(_) => panic!("Upgraded stream cannot converted to raw stream"),
+            Stream::WebSocketStream(s) => s.read_message(),
+        }
+    }
+}
 
-async fn accept_connection<H: Handler>(peer: SocketAddr, stream: TcpStream, mut handler: H) {
-    let mut ws_stream = accept_async(stream).await.expect("Failed to accept");
+pub fn run(addr: &str) -> io::Result<()> {
+    let mut poll = Poll::new()?;
+    let mut events = Events::with_capacity(128);
+    let mut conns = Slab::new();
 
-    handler.on_open(&mut ws_stream).await;
+    let server = TcpListener::bind(addr.parse().expect("Invalid addr representation"))?;
 
+    poll.registry()
+        .register(&server, SERVER, Interests::READABLE)?;
 
-    while let Some(msg) = ws_stream.next().await {
-        let msg = msg.expect("Failed to get request");
-        if msg.is_text() || msg.is_binary() {
-            //handler.on_message(ws_stream, msg).await;
-            //ws_stream.send(msg).await.expect("Failed to send response");
+    loop {
+        poll.poll(&mut events, None)?;
+        for event in &events {
+            match event.token() {
+                SERVER => {
+                    let (conn, addr) = server.accept()?;
+                    println!("Accepted connection from: {}", addr);
+                    let key = conns.insert(Stream::RawStream(conn));
+                    poll.registry().register(
+                        conns[key].get_ref(),
+                        Token(key),
+                        Interests::READABLE.add(Interests::WRITABLE),
+                    )?;
+                }
+                token => {
+                    if event.is_readable() {
+                        if conns[token.0].is_raw() {
+                            let ws = Stream::WebSocketStream(ws_accept(conns.remove(token.0).as_raw()));
+                            let key = conns.insert(ws);
+                            poll.registry().reregister(
+                                conns[key].get_ref(), 
+                                Token(key),
+                                Interests::READABLE.add(Interests::WRITABLE),
+                            )?;
+                                
+                        } else {
+                            println!("msg: {}", conns[token.0].read_message().unwrap());
+                        }
+                    }
+                }
+            }
         }
     }
 
-    //task::spawn(handler.on_close());
-
-    info!("New WebSocket connection: {}", peer);
-}
-
-pub async fn run<H: Handler>(handler: H) {
-    let addr = "127.0.0.1:9002"
-        .to_socket_addrs()
-        .await
-        .expect("Not a valid address")
-        .next()
-        .expect("Not a socket address");
-    let listener = TcpListener::bind(&addr).await.unwrap();
-    info!("Listening on: {}", addr);
-
-    while let Ok((stream, _)) = listener.accept().await {
-        let peer = stream
-            .peer_addr()
-            .expect("connected streams should have a peer address");
-        info!("Peer address: {}", peer);
-
-        async_std::task::spawn(accept_connection(peer, stream, handler.clone()));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        use crate::run;
-        env_logger::init();
-        async_std::task::block_on(run());
-        assert_eq!(2 + 2, 4);
-    }
 }
