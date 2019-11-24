@@ -1,0 +1,19 @@
+union Event {
+    Login,
+}
+
+table Message {
+    event: Event;
+}
+
+root_type Message;
+
+
+
+
+
+
+table Login {
+    id: string;
+    pw: string;
+}

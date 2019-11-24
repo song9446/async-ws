@@ -3,6 +3,7 @@ name = "yaws-rs"
 version = "0.1.0"
 authors = ["Eunchul <eunchul.dev@gmail.com>"]
 edition = "2018"
+build = "src/build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,10 +12,12 @@ async-tungstenite = "*"
 async-std = "1.0"
 actix-threadpool = "0.2"
 slab = "0.4"
-futures = "0.3"
+futures = "0.3.0-alpha.12"
 log = "0.4"
 env_logger = "0.7"
 async-trait = "*"
 http = "0.1.19"
+flatbuffers = "0.5"
 
-[dev-dependencies]
+[build-dependencies]
+flatc-rust = "*"
