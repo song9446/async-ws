@@ -1,4 +1,5 @@
 use thiserror::Error;
+use async_std::future::TimeoutError;
 use async_tungstenite::tungstenite::error::Error as WsError;
 
 #[derive(Error, Debug)]
@@ -10,11 +11,19 @@ pub enum Error {
     //UserLoginFailed,
     //SessionConflict,
     #[error("connection failed")]
-    ConnectError(#[from] ConnectError)
+    ConnectError(#[from] ConnectError),
+    #[error("websocket read failed")]
+    ReadError(#[from] ReadError),
 }
 
-/*pub enum Error {
-}*/
+#[derive(Error, Debug)]
+pub enum ReadError {
+    #[error("websocket read failed")]
+    WsError(#[from] WsError),
+    #[error("timeout no response from client")]
+    TimeoutError(#[from] TimeoutError),
+}
+
 #[derive(Error, Debug)]
 pub enum ConnectError {
     #[error("tcp listen failed")]
