@@ -6,6 +6,7 @@ use futures::Future;
 
 fn main() {
     env_logger::init();
-	let mut h = Handler::new();
-    async_std::task::block_on(h.run("127.0.0.1:3030"));
+	//let mut h = Handler::new();
+    async_std::task::block_on(run("127.0.0.1:3030", |ws| async move {
+    }));
 }

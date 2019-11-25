@@ -1,7 +1,8 @@
 use async_trait::async_trait;
-use futures::StreamExt;
 use futures::Future;
-use futures::channel::oneshot::Canceled;
+//use futures::channel::oneshot::Canceled;
+use futures::channel::oneshot;
+use futures::channel::mpsc::{UnboundedSender, UnboundedReceiver};
 use log::*;
 use slab::Slab;
 //use async_trait::async_trait;
@@ -11,16 +12,14 @@ pub use async_tungstenite::tungstenite::protocol::Message;
 pub use async_tungstenite::{accept_hdr_async, WebSocketStream, accept_async};
 pub use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::Arc;
-use futures::lock::{Mutex, MutexGuard};
 
 
+pub type WebSocket = WebSocketStream<TcpStream>;
 
 /*
  * copied from actix_web::block
  */
-pub type WebSocket = WebSocketStream<TcpStream>;
-
-pub fn block<F, R>(f: F) -> impl Future<Output = Result<R, Canceled>>
+pub fn block<F, R>(f: F) -> impl Future<Output = Result<R, oneshot::Canceled>>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
@@ -28,89 +27,67 @@ where
         actix_threadpool::run(f)
 }
 
-pub struct Handler {
-	conns: Arc<Slab<WebSocket>>,
-}
-impl Handler {
-	pub fn new() -> Self {
-		Handler{ 
-			conns: Arc::new(Slab::new()) 
-		}
-	}
-	pub async fn run(&self, addr: &str){
-		let addr = addr.to_socket_addrs().await
-			.expect("Not a valid address")
-			.next()
-			.expect("Not a socket address");
-		let listener = TcpListener::bind(&addr).await.unwrap();
-		info!("Listening on: {}", addr);
-		while let Ok((stream, _)) = listener.accept().await {
-			let peer = stream
-				.peer_addr()
-				.expect("connected streams should have a peer address");
-			let evloop = async move {
-				let mut ws = accept_hdr_async(stream, |req: &Request|{
-					Ok(None)
-				}).await.expect("handshake error");
-				while let Some(msg) = ws.next().await {
-					let msg = msg.expect("Failed to get request");
-					if msg.is_text() || msg.is_binary() {
-						//self.on_message(msg).await
-						ws.send(msg).await.expect("Failed to send response");
-					}
-				}
-			};
-			async_std::task::spawn(evloop);
-		}
-	}
+type Token = usize;
+
+enum Event{
+    Connection(io::Result<TcpStream>),
+    //Message(Token, io::Result<Message>),
+    Message(Token),
+    Die(Token),
 }
 
-#[async_trait]
-pub trait Handler2 {
-    async fn on_message<'e>(&self, msg: Message, mut ws: MutexGuard<'e, WebSocket>) {
-    }
-    async fn on_message2(&self) {
-    }
-    async fn run(&self, addr: &str) {
-		let addr = addr.to_socket_addrs().await
-			.expect("Not a valid address")
-			.next()
-			.expect("Not a socket address");
-		let listener = TcpListener::bind(&addr).await.unwrap();
-		info!("Listening on: {}", addr);
-        let evloops = futures::stream::FuturesUnordred::new();
-		while let Ok((stream, _)) = listener.accept().await {
-			let peer = stream
-				.peer_addr()
-				.expect("connected streams should have a peer address");
-			let evloop = async move {
-				let mut ws = accept_hdr_async(stream, |req: &Request|{
-					Ok(None)
-				}).await.expect("handshake error");
-                let mut ws = Arc::new(Mutex::new(ws));
-				while let Some(msg) = ws.lock().await.next().await {
-					let msg = msg.expect("Failed to get request");
-                    //self.on_message(msg, ws.clone().lock().await).await
-                    //self.on_message2().await
-					/*if msg.is_text() || msg.is_binary() {
-						//self.on_message(msg).await
-						//ws.send(msg).await.expect("Failed to send response");
-					}*/
-				}
-			};
-            evloops.push(evloop);
-			//async_std::task::spawn(evloop);
-		}
-	}
+struct Session {
+    writer: UnboundedSender,
+    drop: onshot::Sender,
 }
 
-/*pub async fn run<H, F, R>(addr: &str, handler: H)
-where H: Fn(TcpStream) -> F,
-      F: Future<Output=R> + Send + 'static,
-      R: Send + 'static,*/
-      //C: Fn(&Request) -> Result<Option<Vec<(String, String)>>, ErrorResponse> + Sync + Send + Unpin + 'static,
-/*
-pub async fn run<H, F, R>(addr: &str, handler: H)
-where H: Fn(TcpStream) -> F,
-      F: Future<Output=R> + Send + 'static,
-      R: Send + 'static,*/
+pub async fn run(addr: &str)
+{
+    let addr = addr.to_socket_addrs().await
+        .expect("Not a valid address")
+        .next()
+        .expect("Not a socket address");
+    let listener = TcpListener::bind(&addr).await.unwrap();
+    info!("Listening on: {}", addr);
+
+    let mut sessions = Slab::new();
+
+    let (event_sender, event_receiver) = futures::channel::mpsc::unbounded();
+    let conns = listener.incoming().map(|stream| Event::Connection(accept_async(stream)))
+    let mut events = futures::stream::select(conns, event_receiver);
+    loop {
+        match events.next().await {
+            Some(Event::Connection(Ok(stream)) => {
+                let (reader, writer) = futures::stream.split();
+                let (drop, drop_rx) = futures::channel::oneshot();
+                let token = sessions.insert(Session{
+                    writer,
+                    drop,
+                });
+                let event_sender = event_sender.clone();
+                async_std::task::spawn(async move {
+                    token, drop_rx, reader, event_sender
+                });
+            },
+            Some(Event::Die(token)) => {
+                writers.remove(token);
+            }
+        }
+    }
+}
+
+async fn read(token: Token, reader: UnboundedReceiver, event_sender: UnboundedSender, drop_rx: oneshot::Receiver) {
+    let mut drop = drop_rx.fuse();
+    loop {
+        let mut buffer: Vec<u8> = vec![0; 1024];
+        select! {
+            result = reader.read(&mut buffer).fuse() => {
+                match result {
+                }
+            }
+            _ = drop => {
+
+            }
+        }
+    }
+}
