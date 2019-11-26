@@ -16,4 +16,6 @@ pub enum Error {
     WebsocketError(#[from] WsError),
     #[error("a client not react for a long time")]
     TimeoutError(#[from] TimeoutError),
+    #[error("server drop the client")]
+    ServersideDrop,
 }
