@@ -11,23 +11,9 @@ pub enum Error {
     //UserLoginFailed,
     //SessionConflict,
     #[error("connection failed")]
-    ConnectError(#[from] ConnectError),
-    #[error("websocket read failed")]
-    ReadError(#[from] ReadError),
-}
-
-#[derive(Error, Debug)]
-pub enum ReadError {
-    #[error("websocket read failed")]
-    WsError(#[from] WsError),
-    #[error("timeout no response from client")]
-    TimeoutError(#[from] TimeoutError),
-}
-
-#[derive(Error, Debug)]
-pub enum ConnectError {
-    #[error("tcp listen failed")]
     IoError(#[from] std::io::Error),
     #[error("websocket handshake failed")]
-    WsError(#[from] WsError),
+    WebsocketError(#[from] WsError),
+    #[error("a client not react for a long time")]
+    TimeoutError(#[from] TimeoutError),
 }

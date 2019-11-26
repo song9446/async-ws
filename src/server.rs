@@ -53,11 +53,15 @@ enum Event<'a>{
     },
 }
 
-struct Session {
-    writer: SplitSink<WebSocket, WsMessage>,
-    drop: oneshot::Sender<()>,
+enum SocketEvent {
+    Message(WsMessage),
+    Die,
 }
 
+struct Session {
+    writer: UnboundedSender<WsMessage>,
+    drop: oneshot::Sender<()>,
+}
 pub struct Server {
     sessions: Slab::<Session>,
     capacity: usize,
@@ -70,6 +74,10 @@ impl Server {
             capacity: std::usize::MAX,
             timeout: Duration::from_secs(60*60)
         }
+    }
+    pub async fn close_session(&mut self, token: Token) {
+        self.sessions[token].writer.send(WsMessage::Close(None)).await;
+        self.sessions.remove(token);
     }
     pub async fn run(mut self, addr: &str) {
         let addr = addr.to_socket_addrs().await
@@ -88,19 +96,21 @@ impl Server {
         loop {
             match events.next().await {
                 Some(Ok(Event::Connect(stream))) => {
-                    let stream = accept_async(stream).await.unwrap();
-                    let (writer, reader) = stream.split();
-                    let (drop, drop_rx) = oneshot::channel();
+                    if self.capacity <= self.sessions.len() {
+                        stream.shutdown(std::net::Shutdown::Both);
+                        continue;
+                    }
+                    let (writer, message_gate) = unbounded();
+                    let (drop_flag, drop) = oneshot::channel();
                     let token = self.sessions.insert(Session{
-                        writer,
-                        drop,
+                        writer: writer.clone(),
+                        drop: drop_flag,
                     });
                     let event_sender = event_sender.clone();
-                    task::spawn(Self::read(token, reader, event_sender, drop_rx, self.timeout));
+                    task::spawn(Self::read(token, stream, event_sender, message_gate, drop, self.timeout));
                 },
                 Some(Ok(Event::Die{token, reason})) => {
                     self.sessions.remove(token);
-                    println!("{} die, due to {:?}", token, reason);
                 }
                 Some(Ok(Event::Message{token, message})) => {
                     self.sessions.remove(token);
@@ -112,21 +122,25 @@ impl Server {
             }
         }
     }
-    async fn read(token: Token, mut reader: SplitStream<WebSocket>, mut event_sender: EventSender<'_>, drop_rx: oneshot::Receiver<()>, timeout: Duration) {
-        let mut drop = drop_rx.fuse();
+    async fn read(token: Token, mut stream: TcpStream, mut event_sender: EventSender<'_>, message_gate: UnboundedReceiver<WsMessage>, drop: oneshot::Receiver<()>, timeout: Duration) {
+        let mut stream = accept_async(stream).await.unwrap();
+        let mut message_gate = message_gate.fuse();
+        let mut drop = drop.fuse();
         Self::on_open(token, &mut event_sender).await;
         loop {
             select! {
-                res = async_std::future::timeout(timeout, reader.next()).fuse() => {
+                res = async_std::future::timeout(timeout, stream.next()).fuse() => {
                     match res{
                         Ok(Some(Ok(msg))) if msg.len() > 0 => {
-                            Self::on_message(token, msg, &mut event_sender).await;
+                            Self::on_message(token, msg, &mut stream, &mut event_sender).await;
                         }
                         Ok(Some(Err(err))) => {
+                            stream.close(None).await;
                             event_sender.send(Ok(Event::Die{token, reason: Some(err.into())})).await;
                             return;
                         }
                         Err(err) => {
+                            stream.close(None).await;
                             event_sender.send(Ok(Event::Die{token, reason: Some(err.into())})).await;
                             return;
                         }
@@ -137,18 +151,18 @@ impl Server {
                     }
                 }
                 _ = drop => {
-                    println!("drop {}", token);
+                    stream.close(None).await;
                     return;
                 }
             }
         }
     }
     async fn on_open(token: Token, event_sender: &mut EventSender<'_>) {
-        println!("hi {}", token);
     }
-    async fn on_message(token: Token, msg: WsMessage, event_sender: &mut EventSender<'_>) {
-        block(move ||{
+    async fn on_message(token: Token, msg: WsMessage, stream: &mut WebSocket, event_sender: &mut EventSender<'_>) {
+        stream.send(msg).await;
+        /*block(move ||{
             println!("{}: {}", token ,msg);
-        }).await;
+        }).await;*/
     }
 }
