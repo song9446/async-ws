@@ -12,6 +12,6 @@ mod message_generated;
 fn main() {
     env_logger::init();
     let mut server = server::Server::new();
-    async_std::task::block_on(server.with_capacity(2).run("127.0.0.1:3030"));
+    async_std::task::block_on(server.with_capacity(12384).run("127.0.0.1:3012"));
     //async_std::task::block_on(server3::run("127.0.0.1:3030", 10000));
 }
